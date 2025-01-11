@@ -1,4 +1,5 @@
 import logging
+import base64
 from aiogram import Bot, Dispatcher, types
 from aiogram.types import ContentType
 from aiogram.utils import executor
@@ -21,41 +22,51 @@ logging.basicConfig(level=logging.INFO)
 
 REPLICATE_MODEL = "tencentarc/animeganv2"  # AnimeGANv2 model
 
-
 async def replicate_anime_conversion(image_bytes: bytes) -> str:
     """
     Send the image to Replicate's AnimeGANv2 model for conversion.
     Returns the URL of the anime-styled image.
     """
-    headers = {"Authorization": f"Token {REPLICATE_API_TOKEN}"}
-    payload = {
-        "version": "latest",  # Use the latest version of the model
-        "input": {"image": "data:image/jpeg;base64," + image_bytes.decode("utf-8")},
-    }
+    try:
+        # Base64 encode the image
+        image_base64 = base64.b64encode(image_bytes).decode("utf-8")
+        
+        headers = {"Authorization": f"Token {REPLICATE_API_TOKEN}"}
+        payload = {
+            "version": "latest",  # Use the latest version of the model
+            "input": {"image": f"data:image/jpeg;base64,{image_base64}"},
+        }
 
-    async with ClientSession() as session:
-        async with session.post(
-            f"https://api.replicate.com/v1/predictions",
-            headers=headers,
-            json=payload,
-        ) as response:
-            if response.status == 201:
-                response_data = await response.json()
-                return response_data["urls"]["get"]  # URL to fetch the converted image
-            else:
-                raise Exception(
-                    f"Failed to send image to Replicate: {response.status}"
-                )
+        async with ClientSession() as session:
+            async with session.post(
+                f"https://api.replicate.com/v1/predictions",
+                headers=headers,
+                json=payload,
+            ) as response:
+                if response.status == 201:
+                    response_data = await response.json()
+                    return response_data["urls"]["get"]  # URL to fetch the converted image
+                else:
+                    raise Exception(
+                        f"Failed to send image to Replicate: {response.status}, {await response.text()}"
+                    )
+    except Exception as e:
+        logging.error(f"Error in replicate_anime_conversion: {e}")
+        raise
 
 
 async def download_image(file_id: str) -> bytes:
     """
     Download an image from Telegram using its file ID.
     """
-    file_info = await bot.get_file(file_id)
-    file_path = file_info.file_path
-    downloaded_file = await bot.download_file(file_path)
-    return downloaded_file.read()
+    try:
+        file_info = await bot.get_file(file_id)
+        file_path = file_info.file_path
+        downloaded_file = await bot.download_file(file_path)
+        return downloaded_file.read()
+    except Exception as e:
+        logging.error(f"Error in download_image: {e}")
+        raise
 
 
 async def upload_image_to_replicate(image_bytes: bytes) -> str:
