@@ -2,28 +2,50 @@ import logging
 from aiogram import Bot, Dispatcher, types
 from aiogram.types import ContentType
 from aiogram.utils import executor
-from aiogram.contrib.middlewares.logging import LoggingMiddleware
 from aiohttp import ClientSession
 from environs import Env
-from qqddm import AnimeConverter, InvalidQQDDMApiResponseException, IllegalPictureQQDDMApiResponseException
 
 # Load environment variables
 env = Env()
 env.read_env()
 
 TELEGRAM_TOKEN = env.str("TELEGRAM_TOKEN")
-PROXY = env.str("PROXY", None)
+REPLICATE_API_TOKEN = env.str("REPLICATE_API_TOKEN")
 
-# Bot and Dispatcher setup
+# Initialize bot and dispatcher
 bot = Bot(token=TELEGRAM_TOKEN)
 dp = Dispatcher(bot)
 
-# Add logging
+# Configure logging
 logging.basicConfig(level=logging.INFO)
-dp.middleware.setup(LoggingMiddleware())
 
-# Anime converter instance
-anime_converter = AnimeConverter(generate_proxy=PROXY)
+REPLICATE_MODEL = "tencentarc/animeganv2"  # AnimeGANv2 model
+
+
+async def replicate_anime_conversion(image_bytes: bytes) -> str:
+    """
+    Send the image to Replicate's AnimeGANv2 model for conversion.
+    Returns the URL of the anime-styled image.
+    """
+    headers = {"Authorization": f"Token {REPLICATE_API_TOKEN}"}
+    payload = {
+        "version": "latest",  # Use the latest version of the model
+        "input": {"image": "data:image/jpeg;base64," + image_bytes.decode("utf-8")},
+    }
+
+    async with ClientSession() as session:
+        async with session.post(
+            f"https://api.replicate.com/v1/predictions",
+            headers=headers,
+            json=payload,
+        ) as response:
+            if response.status == 201:
+                response_data = await response.json()
+                return response_data["urls"]["get"]  # URL to fetch the converted image
+            else:
+                raise Exception(
+                    f"Failed to send image to Replicate: {response.status}"
+                )
 
 
 async def download_image(file_id: str) -> bytes:
@@ -36,22 +58,18 @@ async def download_image(file_id: str) -> bytes:
     return downloaded_file.read()
 
 
-async def upload_image(url: str) -> bytes:
+async def upload_image_to_replicate(image_bytes: bytes) -> str:
     """
-    Download the anime-converted image from the provided URL.
+    Upload the image to Replicate's model and return the final anime image URL.
     """
-    async with ClientSession() as session:
-        async with session.get(url) as response:
-            if response.status == 200:
-                return await response.read()
-            else:
-                raise Exception(f"Failed to download anime image. HTTP Status: {response.status}")
+    anime_image_url = await replicate_anime_conversion(image_bytes)
+    return anime_image_url
 
 
 @dp.message_handler(content_types=ContentType.PHOTO)
 async def process_photo(message: types.Message):
     """
-    Handles the photo upload, converts it to anime style, and sends it back to the user.
+    Handles photo uploads, converts them to anime style, and sends them back.
     """
     await message.answer_chat_action("upload_photo")
 
@@ -60,23 +78,15 @@ async def process_photo(message: types.Message):
         photo = message.photo[-1]
         image_bytes = await download_image(photo.file_id)
 
-        # Convert to anime
-        result = anime_converter.convert(picture=image_bytes)
-        images = [str(url) for url in result.pictures_urls]
+        # Convert the image to anime style
+        anime_image_url = await upload_image_to_replicate(image_bytes)
 
-        # Download the converted image
-        anime_image = await upload_image(images[0])
+        # Send the anime-styled image URL back to the user
+        await message.answer(f"Here is your anime-styled image:\n{anime_image_url}")
 
-        # Send the anime-style photo to the user
-        await message.answer_photo(anime_image, caption="Here is your anime-styled image!")
-
-    except IllegalPictureQQDDMApiResponseException:
-        await message.answer("The image is not valid for conversion. Please try another one.")
-    except InvalidQQDDMApiResponseException as ex:
-        await message.answer(f"API error: {ex}")
     except Exception as e:
         logging.exception("Error while processing photo")
-        await message.answer("An unexpected error occurred. Please try again later.")
+        await message.answer("An error occurred while processing your photo. Please try again.")
 
 
 @dp.message_handler(commands=["start", "help"])
@@ -85,23 +95,13 @@ async def send_welcome(message: types.Message):
     Handles /start and /help commands.
     """
     welcome_text = (
-        "Welcome to the Anime Style Converter Bot!\n"
-        "Send me a photo, and I'll convert it into an anime style.\n\n"
-        "Commands:\n"
+        "🎨 **Welcome to the Anime Style Converter Bot!**\n\n"
+        "📷 Send me a photo, and I'll convert it into anime style using advanced AI.\n"
+        "💡 Powered by Replicate's AnimeGANv2 model.\n\n"
+        "**Commands:**\n"
         "/help - Show this help message\n"
     )
-    await message.answer(welcome_text)
-
-
-@dp.errors_handler(exception=Exception)
-async def global_error_handler(update: types.Update, exception: Exception):
-    """
-    Global error handler for unexpected errors.
-    """
-    logging.exception(f"Update caused an error: {exception}")
-    if isinstance(update, types.Message):
-        await update.answer("An error occurred while processing your request.")
-    return True
+    await message.answer(welcome_text, parse_mode="Markdown")
 
 
 if __name__ == "__main__":
